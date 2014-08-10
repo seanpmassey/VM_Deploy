@@ -1,0 +1,10 @@
+﻿<ProjectState>
+  <Version>1.0</Version>
+  <FileID>29c79ec6-e796-4bb8-b5e7-0222c7b2cb67</FileID>
+  <OpenFiles>
+    <File>Install-SQLServer.ps1</File>
+    <File>Create-SQLInstanceDisks.ps1</File>
+    <File>Configure-BaseSQLServer.ps1</File>
+    <File>Provision-VM.ps1</File>
+  </OpenFiles>
+</ProjectState>
