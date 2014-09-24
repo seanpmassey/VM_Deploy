@@ -1,36 +1,120 @@
-﻿Param($Servername,$location = "FTDC1",$IPAddress,[switch]$Dev,$CPUCount=1,$RAMCount=4,$Description,$Version="2012")
-Add-PSSnapin VMware.DeployAutomation
+﻿<#
+	.SYNOPSIS
+		This script will deploy a new VM from a template.  The template name and customization data is stored in a SQL database that is queried at run-time.  Prior to running this script, please read through the code and update the two credentials, the SQL server connection information, and the OUs for the AD Computer accounts.
+		
+		This script requires a SQL Server database to contain the customization data for the virtual machines.
 
+	.DESCRIPTION
+		This script will provision and customize a virtual machine based on values retrieved from a SQL database.
+
+	.PARAMETER  Servername
+		The name of the virtual machine in vCenter. This value will also be used as the computer's Active Directory name.
+
+	.PARAMETER  Profile
+		The information used to provision and customize the virtual machine.  This includes the template name, IP subnet information, cluster, and datastore. 
+
+	.PARAMETER  IPAddress
+		The IP Address that the VM will use after customization.
+	
+	.PARAMETER  DEV
+		A switch parameter that can be used if you have a separate OU for development environments.
+
+	.PARAMETER  CPUCount
+		The number of CPUs that will be assigned to the VM during provisioning.
+
+	.PARAMETER  RAMCount
+		The amount of RAM assigned to the VM.
+
+	.PARAMETER  Description
+		A description or note to describe the VM in vCenter
+
+	.PARAMETER  vCenter
+		The vCenter Server that the script will connect to when performing provisioning operations
+
+	.PARAMETER  CredentialPath
+		The path the folder where the credential hashes are stored. The password hash can be created with the ....
+
+	.PARAMETER  DomainController
+		The domain controller that Active Directory operations will be performed against.
+
+	.PARAMETER  SQLServer
+		The SQL Server that the configuration information is stored in.  If you are not using a default instance, enter the SQL Server name as sql\instance.
+
+	.EXAMPLE
+		PS C:\Scripts\VMProvisioning> .\Provision-VM.ps1 -Servername TestVM99 -profile 2008R2 -IPAddress 192.168.1.100 -CPUCount 1 -RAMCount 4 -Description "Test Server" -vCenter vcsa.contoso.com -DomainController dc1.contoso.com
+
+	.NOTES
+		Make sure you configure your authentication first.  This is first section at the top of the script.  The SQL Server connection details also need to be configured.  SQL Authentication is required because you cannot use alternative credentials when SQL is configured for Windows Authentication.
+		
+		
+
+	.LINK
+		about_functions_advanced
+
+	.LINK
+		about_comment_based_help
+
+#>
+
+
+Param($Servername,$profile,$IPAddress,[switch]$Dev,$CPUCount=1,$RAMCount=4,$Description,$vCenter,$CredentialPath="\\fs1\Secured$\Credentials",$DomainController,$SQLServer)
 
 add-pssnapin vmware.vimautomation.core
-Import-Module ActiveDirectory,SQLPS
+Import-Module ActiveDirectory
+#Import-Module SQLPS
+
+Set-Location C:\Scripts\VMProvisioning
 
 #Configure AD Credentials
-$ADUser = "Service Account UPN"
-$PWHash = Get-Content Location of Password Hash file
-$key = $key = Get-Content Location of Password Key File
+#Change ADUser to match your environment
+$ADUser = "svcADAutomation@lan.seanmassey.net"
+$PWHash = Get-Content $CredentialPath\$ADUser.txt
+$key = Get-Content $CredentialPath\$ADUser.key
 $securestring = ConvertTo-SecureString -String $PWHash -Key $key
 $ADCred = New-Object –TypeName System.Management.Automation.PSCredential –ArgumentList $ADUser,$securestring
 
 #Configure vCenter Connection
-$vCenterUser = "Service Account UPN"
-$PWHash = Get-Content Location of Password Hash file
-$key = $key = Get-Content Location of Password Key File
+#Change vCenter User to Match your environment
+$vCenterUser = "svcvCenterAutomation@lan.seanmassey.net"
+$PWHash = Get-Content $CredentialPath\$vCenterUser.txt
+$key = Get-Content $CredentialPath\$vCenterUser.key
 $securestring = ConvertTo-SecureString -String $PWHash -Key $key
 $vCenterCred = New-Object –TypeName System.Management.Automation.PSCredential –ArgumentList $vCenterUser,$securestring
 
-Connect-VIServer vCenterFQDN -Credential $vCenterCred
+Connect-VIServer $vCenter -Credential $vCenterCred
 
-$LocationDetails = Invoke-Sqlcmd -query "Select * FROM OSCustomizationSettings WHERE Location_ID = '$Location'" -database OSCustomizationDB -serverinstance "SQLServer\Instance"
+#Configure This Section Prior to running the script
+$dataSource = $SQLServer
+$user = "SQL User"
+$pwd = "SQL Password"
+$database = "OSCustomizationDB"
+$connectionString = "Server=$dataSource;uid=$user;pwd=$pwd;Database=$database;Integrated Security=False;"
+ 
+$query = "Select * FROM '$database' WHERE Location_ID = '$Profile'"
+ 
+$connection = New-Object System.Data.SqlClient.SqlConnection
+$connection.ConnectionString = $connectionString
+$connection.Open()
+$command = $connection.CreateCommand()
+$command.CommandText  = $query
+ 
+$result = $command.ExecuteReader()
 
-$SubnetMask = $LocationDetails.Location_NetMask
-$DefaultGW = $LocationDetails.Location_GW
-$DataStore = $LocationDetails.Location_Datastore
-$ESXiHost = $LocationDetails.Location_Host
-$DNS = $LocationDetails.Location_DNS
+$ProfileDetails = new-object “System.Data.DataTable”
+$ProfileDetails.Load($result)
+
+$SubnetMask = ($ProfileDetails.Location_NetMask).trim()
+$DefaultGW = ($ProfileDetails.Location_GW).trim()
+$DataStore = $ProfileDetails.Location_Datastore
+$ESXiHost = $ProfileDetails.Location_Host
+$CustSpec = $ProfileDetails.Location_CustSpec
+$template = $ProfileDetails.Location_Template
+$DNS = $ProfileDetails.Location_DNS
 $DNS = $DNS.Split(",")
 
-Try{$TestAD = Get-ADComputer -Identity $Servername -ErrorAction SilentlyContinue}
+$connection.close()
+
+Try{$TestAD = Get-ADComputer -Identity $Servername -Server $DomainController -ErrorAction SilentlyContinue}
 Catch{Write-Output "Computer Account does not exist."}
 
 Try
@@ -48,13 +132,14 @@ Try
 	}
 	Else
 	{
+		#Configure the AD OU paths prior to running the script
 		If($Dev -ne $true)
 		{
-			New-ADComputer -Name $Servername -Path "OU Distinguished Name" -Server DCFQDN -Credential $ADCred
+			New-ADComputer -Name $Servername -SAMAccountName $Servername -Path "OU=Servers,DC=lan,DC=seanmassey,DC=net" -Server $DomainController -Credential $ADCred
 		}
 		Else
 		{
-			New-ADComputer -Name $Servername -Path "OU Distinguished Name" -Server DCFQDN -Credential $ADCred
+			New-ADComputer -Name $Servername -SAMAccountName $Servername -Path "OU=Servers,DC=lan,DC=seanmassey,DC=net" -Server $DomainController -Credential $ADCred
 		}
 	}
 	
@@ -65,20 +150,9 @@ Try
 	}
 	Else
 	{
-		Get-OSCustomizationSpec -Name AutomationSpec | New-OSCustomizationSpec -Name $OSSpecName -Type NonPersistent
+		Get-OSCustomizationSpec -Name $CustSpec | New-OSCustomizationSpec -Name $OSSpecName -Type NonPersistent
 
 		Get-OSCustomizationSpec -Name $OSSpecName | Get-OSCustomizationNicMapping | Set-OSCustomizationNicMapping -IpMode UseStaticIP -IpAddress $IPAddress -SubnetMask $SubnetMask -DefaultGateway $DefaultGW -Dns $DNS
-	}
-	
-	Switch ($Version)
-	{
-		2012 { $template = "Windows Server 2012 R2" }
-		2008 { $template = "Windows Server 2008 R2" }
-		Default
-		{
-			Write-Error "Unknown Template. Exiting"
-			Exit
-		}
 	}
 	
 	New-VM -Name $Servername -Template $Template -ResourcePool $ESXiHost -Datastore $Datastore -Notes $Description -OSCustomizationSpec $OSSpecName
@@ -87,11 +161,11 @@ Try
 	
 	If ($Dev -eq $true)
 	{
-		Move-VM -VM $Servername -Destination Dev-Servers-VM-Folder -Confirm:$false
+		Move-VM -VM $Servername -Destination Test -Confirm:$false
 	}
 	
 	Start-VM $Servername
-	Write-Output "Waiting for Customization to Complete."
+	Write-Output "Starting Customization."
 	
 	Do
 	{
@@ -99,10 +173,16 @@ Try
 	$events = Get-VM -Name $servername | Get-VIEvent -Types Info | Where-Object {($_ -is "VMware.Vim.CustomizationSucceeded") -or ($_ -is "VMware.Vim.CustomizationFailed")}
 	Write-Output "Waiting for Customization to Complete."
 	}
-	While ($events -eq $null)
+	While($events -eq $null)
 	
-	Write-Output "Customization Complete."
-
+	If($events -is "VMware.Vim.CustomizationSucceeded")
+	{
+		Write-Output "Customization Completed Successfully"
+	}
+	ElseIF($events -is "VMware.Vim.CustomizationFailed")
+	{
+		Write-Output "Customization Did Not Complete Successfully"
+	}
 }
 Finally
 {
