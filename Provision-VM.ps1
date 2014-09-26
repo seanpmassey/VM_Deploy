@@ -40,8 +40,11 @@
 	.PARAMETER  SQLServer
 		The SQL Server that the configuration information is stored in.  If you are not using a default instance, enter the SQL Server name as sql\instance.
 
+	.PARAMETER  Owner
+		The Active Directory User or Group that will be granted administrator rights on the server.
+
 	.EXAMPLE
-		PS C:\Scripts\VMProvisioning> .\Provision-VM.ps1 -Servername TestVM99 -profile 2008R2 -IPAddress 192.168.1.100 -CPUCount 1 -RAMCount 4 -Description "Test Server" -vCenter vcsa.contoso.com -DomainController dc1.contoso.com
+		PS C:\Scripts\VMProvisioning> .\Provision-VM.ps1 -Servername TestVM99 -profile 2008R2 -IPAddress 192.168.1.100 -CPUCount 1 -RAMCount 4 -Description "Test Server" -vCenter vcsa.contoso.com -DomainController dc1.contoso.com -Owner User1
 
 	.NOTES
 		Make sure you configure your authentication first.  This is first section at the top of the script.  The SQL Server connection details also need to be configured.  SQL Authentication is required because you cannot use alternative credentials when SQL is configured for Windows Authentication.
@@ -57,7 +60,7 @@
 #>
 
 
-Param($Servername,$profile,$IPAddress,[switch]$Dev,$CPUCount=1,$RAMCount=4,$Description,$vCenter,$CredentialPath="\\fs1\Secured$\Credentials",$DomainController,$SQLServer)
+Param($Servername,$profile,$IPAddress,[switch]$Dev,$CPUCount=1,$RAMCount=4,$Description,$vCenter,$CredentialPath="\\fs1\Secured$\Credentials",$DomainController,$SQLServer,$Owner)
 
 add-pssnapin vmware.vimautomation.core
 Import-Module ActiveDirectory
@@ -85,12 +88,13 @@ Connect-VIServer $vCenter -Credential $vCenterCred
 
 #Configure This Section Prior to running the script
 $dataSource = $SQLServer
-$user = "SQL User"
-$pwd = "SQL Password"
+$user = "SQLAutomation"
+$pwd = "t@#k4guGFh1#n3TmbFlXFx#mvHt2JZE^tbENhwZz&SIM6fJinG"
 $database = "OSCustomizationDB"
+$databasetable = "OSCustomizationSettings"
 $connectionString = "Server=$dataSource;uid=$user;pwd=$pwd;Database=$database;Integrated Security=False;"
  
-$query = "Select * FROM '$database' WHERE Location_ID = '$Profile'"
+$query = "Select * FROM $databasetable WHERE Location_ID = '$Profile'"
  
 $connection = New-Object System.Data.SqlClient.SqlConnection
 $connection.ConnectionString = $connectionString
@@ -111,8 +115,6 @@ $CustSpec = $ProfileDetails.Location_CustSpec
 $template = $ProfileDetails.Location_Template
 $DNS = $ProfileDetails.Location_DNS
 $DNS = $DNS.Split(",")
-
-$connection.close()
 
 Try{$TestAD = Get-ADComputer -Identity $Servername -Server $DomainController -ErrorAction SilentlyContinue}
 Catch{Write-Output "Computer Account does not exist."}
@@ -178,6 +180,20 @@ Try
 	If($events -is "VMware.Vim.CustomizationSucceeded")
 	{
 		Write-Output "Customization Completed Successfully"
+		
+		#Add Server Owner to Local Administrators Group
+		If($Owner -ne $null)
+		{
+		Wait-Tools -VM $Servername -HostCredential $ADCred -TimeoutSeconds 180
+		
+		$Domain = (Get-ADDomain -Current LocalComputer).forest
+		$pass = $ADCred.getnetworkcredential().password
+		$object = New-Object System.DirectoryServices.DirectoryEntry("WinNT://$servername", $ADUser, $pass)
+		$object.Children.Find("Administrators", "group")
+		$group = $object.Children.Find("Administrators", "group")
+		$group.Add("WinNT://$domain/$Owner")
+		$pass = $Null	
+		}
 	}
 	ElseIF($events -is "VMware.Vim.CustomizationFailed")
 	{
@@ -187,4 +203,9 @@ Try
 Finally
 {
 	Disconnect-VIServer -Confirm:$false
+	
+	If($connection -ne $null)
+	{
+		$connection.close()
+	}
 }
