@@ -15,9 +15,6 @@
 
 	.PARAMETER  IPAddress
 		The IP Address that the VM will use after customization.
-	
-	.PARAMETER  DEV
-		A switch parameter that can be used if you have a separate OU for development environments.
 
 	.PARAMETER  CPUCount
 		The number of CPUs that will be assigned to the VM during provisioning.
@@ -47,9 +44,8 @@
 		PS C:\Scripts\VMProvisioning> .\Provision-VM.ps1 -Servername TestVM99 -profile 2008R2 -IPAddress 192.168.1.100 -CPUCount 1 -RAMCount 4 -Description "Test Server" -vCenter vcsa.contoso.com -DomainController dc1.contoso.com -Owner User1
 
 	.NOTES
-		Make sure you configure your authentication first.  This is first section at the top of the script.  The SQL Server connection details also need to be configured.  SQL Authentication is required because you cannot use alternative credentials when SQL is configured for Windows Authentication.
-		
-		
+		Make sure you configure your authentication first.  This is first section at the top of the script.  The SQL Server connection details also need to be configured.  SQL Authentication is required because you cannot use alternative credentials when SQL is configured for Windows Authentication.  A basic SQL database will be required for storing profile data.
+				
 
 	.LINK
 		about_functions_advanced
@@ -60,7 +56,7 @@
 #>
 
 
-Param($Servername,$profile,$IPAddress,[switch]$Dev,$CPUCount=1,$RAMCount=4,$Description,$vCenter,$CredentialPath="\\fs1\Secured$\Credentials",$DomainController,$SQLServer,$Owner)
+Param($Servername,$profile,$IPAddress,$CPUCount=1,$RAMCount=4,$Description,$vCenter,$CredentialPath="Path",$DomainController,$SQLServer,$Owner)
 
 add-pssnapin vmware.vimautomation.core
 Import-Module ActiveDirectory
@@ -70,7 +66,7 @@ Set-Location C:\Scripts\VMProvisioning
 
 #Configure AD Credentials
 #Change ADUser to match your environment
-$ADUser = "svcADAutomation@lan.seanmassey.net"
+$ADUser = "AD Service account @ UPN"
 $PWHash = Get-Content $CredentialPath\$ADUser.txt
 $key = Get-Content $CredentialPath\$ADUser.key
 $securestring = ConvertTo-SecureString -String $PWHash -Key $key
@@ -78,7 +74,7 @@ $ADCred = New-Object –TypeName System.Management.Automation.PSCredential –Ar
 
 #Configure vCenter Connection
 #Change vCenter User to Match your environment
-$vCenterUser = "svcvCenterAutomation@lan.seanmassey.net"
+$vCenterUser = "vCenter Account @ UPN"
 $PWHash = Get-Content $CredentialPath\$vCenterUser.txt
 $key = Get-Content $CredentialPath\$vCenterUser.key
 $securestring = ConvertTo-SecureString -String $PWHash -Key $key
@@ -88,13 +84,13 @@ Connect-VIServer $vCenter -Credential $vCenterCred
 
 #Configure This Section Prior to running the script
 $dataSource = $SQLServer
-$user = "SQLAutomation"
-$pwd = "t@#k4guGFh1#n3TmbFlXFx#mvHt2JZE^tbENhwZz&SIM6fJinG"
+$user = "SQL User"
+$pwd = "SQL Password"
 $database = "OSCustomizationDB"
 $databasetable = "OSCustomizationSettings"
 $connectionString = "Server=$dataSource;uid=$user;pwd=$pwd;Database=$database;Integrated Security=False;"
  
-$query = "Select * FROM $databasetable WHERE Location_ID = '$Profile'"
+$query = "Select * FROM $databasetable WHERE Profile_ID = '$Profile'"
  
 $connection = New-Object System.Data.SqlClient.SqlConnection
 $connection.ConnectionString = $connectionString
@@ -107,14 +103,16 @@ $result = $command.ExecuteReader()
 $ProfileDetails = new-object “System.Data.DataTable”
 $ProfileDetails.Load($result)
 
-$SubnetMask = ($ProfileDetails.Location_NetMask).trim()
-$DefaultGW = ($ProfileDetails.Location_GW).trim()
-$DataStore = $ProfileDetails.Location_Datastore
-$ESXiHost = $ProfileDetails.Location_Host
-$CustSpec = $ProfileDetails.Location_CustSpec
-$template = $ProfileDetails.Location_Template
-$DNS = $ProfileDetails.Location_DNS
+$SubnetMask = ($ProfileDetails.Profile_NetMask).trim()
+$DefaultGW = ($ProfileDetails.Profile_GW).trim()
+$DataStore = $ProfileDetails.Profile_Datastore
+$ESXiHost = $ProfileDetails.Profile_ResourcePool
+$CustSpec = $ProfileDetails.Profile_CustSpec
+$template = $ProfileDetails.Profile_Template
+$DNS = $ProfileDetails.Profile_DNS
 $DNS = $DNS.Split(",")
+$OU = $ProfileDetails.Profile_OU
+$OU = $OU.Replace("`"","")
 
 Try{$TestAD = Get-ADComputer -Identity $Servername -Server $DomainController -ErrorAction SilentlyContinue}
 Catch{Write-Output "Computer Account does not exist."}
@@ -135,14 +133,7 @@ Try
 	Else
 	{
 		#Configure the AD OU paths prior to running the script
-		If($Dev -ne $true)
-		{
-			New-ADComputer -Name $Servername -SAMAccountName $Servername -Path "OU=Servers,DC=lan,DC=seanmassey,DC=net" -Server $DomainController -Credential $ADCred
-		}
-		Else
-		{
-			New-ADComputer -Name $Servername -SAMAccountName $Servername -Path "OU=Servers,DC=lan,DC=seanmassey,DC=net" -Server $DomainController -Credential $ADCred
-		}
+		New-ADComputer -Name $Servername -SAMAccountName $Servername -Path $OU -Server $DomainController -Credential $ADCred
 	}
 	
 
@@ -185,11 +176,10 @@ Try
 		If($Owner -ne $null)
 		{
 		Wait-Tools -VM $Servername -HostCredential $ADCred -TimeoutSeconds 180
-		
+
 		$Domain = (Get-ADDomain -Current LocalComputer).forest
 		$pass = $ADCred.getnetworkcredential().password
 		$object = New-Object System.DirectoryServices.DirectoryEntry("WinNT://$servername", $ADUser, $pass)
-		$object.Children.Find("Administrators", "group")
 		$group = $object.Children.Find("Administrators", "group")
 		$group.Add("WinNT://$domain/$Owner")
 		$pass = $Null	
